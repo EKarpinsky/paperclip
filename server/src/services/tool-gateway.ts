@@ -1280,22 +1280,10 @@ export function createToolGatewayService(
     // Read each connection and application row once. Selecting them in the
     // catalog join repeats the full connection row (config included) for
     // every tool, and one connection can expose hundreds of tools. Both reads
-    // share one read-only snapshot, so they agree like a single join.
+    // share one read-only snapshot, so they agree like a single join, and the
+    // second read gets only the connections that have listed tools.
     const { connectionRows, catalogRows } = await db.transaction(
       async (tx) => {
-        const connectionRows = await tx
-          .select({
-            connection: toolConnections,
-            application: toolApplications,
-          })
-          .from(toolConnections)
-          .innerJoin(
-            toolApplications,
-            eq(toolConnections.applicationId, toolApplications.id),
-          )
-          .where(connectedMcpConnectionFilter(companyId));
-        if (connectionRows.length === 0)
-          return { connectionRows, catalogRows: [] };
         const catalogRows = await tx
           .select({ catalogEntry: toolCatalogEntries })
           .from(toolCatalogEntries)
@@ -1317,6 +1305,29 @@ export function createToolGatewayService(
             ),
           )
           .orderBy(toolConnections.name, toolCatalogEntries.name);
+        const connectionIds = [
+          ...new Set(
+            catalogRows.map(({ catalogEntry }) => catalogEntry.connectionId),
+          ),
+        ];
+        if (connectionIds.length === 0)
+          return { connectionRows: [], catalogRows };
+        const connectionRows = await tx
+          .select({
+            connection: toolConnections,
+            application: toolApplications,
+          })
+          .from(toolConnections)
+          .innerJoin(
+            toolApplications,
+            eq(toolConnections.applicationId, toolApplications.id),
+          )
+          .where(
+            and(
+              inArray(toolConnections.id, connectionIds),
+              connectedMcpConnectionFilter(companyId),
+            ),
+          );
         return { connectionRows, catalogRows };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },

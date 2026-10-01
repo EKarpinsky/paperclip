@@ -40,15 +40,17 @@ const LARGE_TASK_TEXT = "Task description. ".repeat(12_000);
 /** A second handle on the same connection pool that records every statement. */
 function recordingDb(db: Db) {
   const statements: string[] = [];
+  const statementParams: unknown[][] = [];
   const recorded = drizzle(db.$client, {
     schema: db._.fullSchema,
     logger: {
-      logQuery: (query: string) => {
+      logQuery: (query: string, params: unknown[]) => {
         statements.push(query);
+        statementParams.push(params);
       },
     },
   }) as unknown as Db;
-  return { db: recorded, statements };
+  return { db: recorded, statements, statementParams };
 }
 
 async function createListingFixture(
@@ -222,7 +224,7 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     await createToolGatewayService(db).listToolsForNamedGateway(listing);
     const recorder = recordingDb(db);
     const tools = await createToolGatewayService(recorder.db).listToolsForNamedGateway(listing);
-    return { tools, statements: recorder.statements };
+    return { tools, statements: recorder.statements, statementParams: recorder.statementParams };
   }
 
   it("keeps the query count of a named gateway listing constant from 50 to 500 catalog tools", async () => {
@@ -251,7 +253,19 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
 
   it("reads the catalog without repeating the connection row for each tool", async () => {
     const fixture = await createListingFixture(db, 20);
-    const { statements } = await measureNamedGatewayListing(fixture);
+    // An eligible connection without catalog tools adds nothing to a listing.
+    const emptyConnection = await db.insert(toolConnections).values({
+      companyId: fixture.company.id,
+      applicationId: fixture.application.id,
+      name: "Connection without tools",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning().then((rows) => rows[0]!);
+    const { statements, statementParams } = await measureNamedGatewayListing(fixture);
 
     const catalogReads = statements.filter((statement) =>
       statement.includes('from "tool_catalog_entries"')
@@ -260,6 +274,13 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     for (const statement of catalogReads) {
       expect(statement).not.toContain('"tool_connections"."config"');
     }
+    const connectionReadParams = statements.flatMap((statement, index) =>
+      statement.includes('from "tool_connections"') && statement.includes('"tool_connections"."config"')
+        ? [statementParams[index]!]
+        : []);
+    expect(connectionReadParams).toHaveLength(1);
+    expect(connectionReadParams[0]).toContain(fixture.connection.id);
+    expect(connectionReadParams[0]).not.toContain(emptyConnection.id);
   });
 
   it("never selects the whole run snapshot or result when it decides access", async () => {
@@ -419,6 +440,19 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
       riskLevel: "read",
       versionHash: randomUUID(),
     }).returning().then((rows) => rows[0]!);
+    // Listings never show a quarantined entry, so a cached decision for it
+    // takes the direct query.
+    const quarantinedEntry = await db.insert(toolCatalogEntries).values({
+      companyId: fixture.company.id,
+      applicationId: fixture.application.id,
+      connectionId: fixture.connection.id,
+      name: "quarantined_tool",
+      toolName: "quarantined_tool",
+      riskLevel: "read",
+      status: "quarantined",
+      quarantinedAt: new Date(),
+      versionHash: randomUUID(),
+    }).returning().then((rows) => rows[0]!);
 
     const requestFor = (entry: { id: string; connectionId: string; toolName: string }) => ({
       catalogEntryId: entry.id,
@@ -451,6 +485,11 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
         companyId: fixture.company.id,
         actor: secondAgentActor,
         request: requestFor(disabledEntry),
+      },
+      {
+        companyId: fixture.company.id,
+        actor: secondAgentActor,
+        request: requestFor(quarantinedEntry),
       },
       {
         companyId: fixture.company.id,

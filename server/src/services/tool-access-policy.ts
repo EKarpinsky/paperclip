@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -897,20 +897,31 @@ export function toolAccessPolicyService(db: Db) {
   }
 
   async function loadCatalogEntry(companyId: string, catalogEntryId: string, cache?: ToolAccessDecisionCache) {
-    // Only a canonical id can use the in-memory lookup. Any other spelling
-    // takes the direct query, so a cached and an uncached decision agree.
-    if (!cache || !CANONICAL_UUID_RE.test(catalogEntryId)) {
+    const readEntry = async () => {
       const [entry] = await db.select(catalogEntryContextColumns).from(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalogEntryId));
       return entry && entry.companyId === companyId ? entry : null;
-    }
-    // A listing decides most catalog tools of the company, so a batch reads the
-    // company's entries once and looks each one up in memory.
-    const entriesById = await cachedRead(cache, `catalog-entries:${companyId}`, async () => {
-      const entries = await db.select(catalogEntryContextColumns).from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, companyId));
+    };
+    // Only a canonical id can use the in-memory lookup. Any other spelling
+    // takes the direct query, so a cached and an uncached decision agree.
+    if (!cache || !CANONICAL_UUID_RE.test(catalogEntryId)) return readEntry();
+    // A listing decides the active catalog tools of the company, so a batch
+    // reads those entries once and looks each one up in memory. Any other
+    // entry takes the direct query.
+    const entriesById = await cachedRead(cache, `active-catalog-tools:${companyId}`, async () => {
+      const entries = await db
+        .select(catalogEntryContextColumns)
+        .from(toolCatalogEntries)
+        .where(and(
+          eq(toolCatalogEntries.companyId, companyId),
+          eq(toolCatalogEntries.entryKind, "tool"),
+          eq(toolCatalogEntries.status, "active"),
+          isNull(toolCatalogEntries.quarantinedAt),
+        ));
       return new Map(entries.map((entry) => [entry.id, entry]));
     });
     const entry = entriesById.get(catalogEntryId);
-    return entry && entry.companyId === companyId ? entry : null;
+    if (!entry) return readEntry();
+    return entry.companyId === companyId ? entry : null;
   }
 
   async function loadContext(input: ToolAccessDecisionInput, cache?: ToolAccessDecisionCache): Promise<
