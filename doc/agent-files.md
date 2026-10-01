@@ -172,6 +172,16 @@ New current-file bytes are not database revision rows. Old instruction-only
 candidates are retained solely for upgrade compatibility.
 
 Crash recovery can collect a stopped working copy without starting a model.
+Cleanup does not wait for a directory lock before process-stop proof exists, or
+after the copy is superseded or cleanup is complete. An unavailable copy keeps
+its failed-save receipt. Recovery can later clean an unavailable remote copy
+after destruction of its exact lease and executes no remote command. An
+unavailable local copy can still contain uncollected edits; this cleanup path
+preserves those bytes even if local stop proof arrives later.
+Deferred cleanup retries after a
+delay so one blocked copy does not prevent other copies from being cleaned.
+Re-preparing an existing run uses the same lock as cleanup and rechecks its
+receipt under that lock. Preparing a new run keeps its separate admission path.
 Missing stop proof or lost remote bytes produce a visible diagnostic, never a
 save receipt. An interrupted apply can replay its changed files with the same
 last-sync-wins rule. Cleanup resumes for terminal runs; no copy is retained as

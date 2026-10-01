@@ -186,7 +186,7 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
       const lock = read(error, "workspaceRestoreLock");
       const operation = read(lock, "operation");
-      if (["agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
+      if (["agent_directory_prepare", "agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
         execution.restoreLockOperation = operation as string;
       }
       const ownerState = read(lock, "ownerState");
