@@ -1728,6 +1728,10 @@ export function createToolGatewayService(
               ? "failure"
               : "success";
     try {
+      const tokenId = input.session?.gatewayTokenId && uuidPattern.test(input.session.gatewayTokenId)
+        ? input.session.gatewayTokenId
+        : typeof input.details.gatewayTokenId === "string" && uuidPattern.test(input.details.gatewayTokenId)
+          ? input.details.gatewayTokenId : null;
       await db.insert(toolAccessAuditEvents).values({
         companyId: input.companyId,
         gatewayId:
@@ -1736,14 +1740,12 @@ export function createToolGatewayService(
           uuidPattern.test(input.details.gatewayId)
             ? input.details.gatewayId
             : null),
-        gatewayTokenId:
-          input.session?.gatewayTokenId &&
-          uuidPattern.test(input.session.gatewayTokenId)
-            ? input.session.gatewayTokenId
-            : typeof input.details.gatewayTokenId === "string" &&
-                uuidPattern.test(input.details.gatewayTokenId)
-              ? input.details.gatewayTokenId
-              : null,
+        // Cleanup can remove a token after request admission. Resolve the FK
+        // inside this INSERT and lock a surviving row until the statement ends.
+        // A plain existence read before insertion still races with deletion.
+        gatewayTokenId: tokenId ? sql`(select ${toolMcpGatewayTokens.id} from ${toolMcpGatewayTokens}
+          where ${toolMcpGatewayTokens.id} = ${tokenId} and ${toolMcpGatewayTokens.companyId} = ${input.companyId}
+          for key share)` : null,
         gatewayPublicId:
           typeof input.details.gatewayPublicId === "string"
             ? input.details.gatewayPublicId

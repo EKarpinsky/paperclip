@@ -15,6 +15,10 @@ names. They do not retain the full name list. Named gateway tokens expire normal
 startup and scheduler sweeps delete at most 500 expired tokens per pass using the
 expiry index. Tokens with no expiry and unexpired tokens remain available. The
 separate access and activity audit records remain available.
+Audit inserts resolve the token reference atomically and lock a surviving token
+row for that statement. If cleanup already removed it, the reference is null and
+the original token ID remains in audit details. An admitted request can complete;
+later requests still fail authentication after expiry.
 
 The stateless gateway and runtime-tools MCP endpoints return HTTP 405 with
 `Allow: POST` for GET instead of returning JSON as if it were an SSE stream.

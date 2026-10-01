@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -117,6 +117,41 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(await db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, expired.id))).toEqual([]);
     expect(await db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, fixture.token.id))).toHaveLength(1);
     await expect(service.cleanupExpiredSessions({ now })).resolves.toMatchObject({ deletedCount: 0 });
+  });
+
+  it("completes an admitted listing after token expiry cleanup without losing its audit", async () => {
+    const fixture = await createListingFixture(db, 6);
+    const service = createToolGatewayService(db);
+    let started!: () => void;
+    let resume!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const transaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce(async (work, config) => {
+      started();
+      await gate;
+      return transaction(work, config);
+    });
+    const listing = service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const outcome = listing.then((tools) => ({ tools }), (error: unknown) => ({ error }));
+    try {
+      await admitted;
+      await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
+        .where(eq(toolMcpGatewayTokens.id, fixture.token.id));
+      await service.cleanupExpiredSessions();
+      resume();
+      const result = await outcome;
+      expect(result).not.toHaveProperty("error");
+      expect("tools" in result && result.tools.length).toBeGreaterThan(0);
+      const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.company.id));
+      expect(audits.some((audit) => audit.action === "tool_gateway.discovery")).toBe(true);
+      await expect(service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token }))
+        .rejects.toMatchObject({ status: 401 });
+    } finally {
+      resume();
+      await outcome;
+      spy.mockRestore();
+    }
   });
 
   it("keeps the query count of a named gateway listing constant from 50 to 500 catalog tools", async () => {

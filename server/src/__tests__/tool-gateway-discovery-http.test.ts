@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectionGrants, createDb, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
+import { connectionGrants, createDb, toolMcpGatewayTokens, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { createListingFixture } from "./helpers/tool-gateway-listing-fixture.js";
@@ -17,6 +18,36 @@ suite("MCP discovery over HTTP", () => {
     db = createDb(temp.connectionString);
   });
   afterAll(async () => { await temp?.cleanup(); });
+
+  it("finishes an admitted provider call when token cleanup runs during dispatch", async () => {
+    const fixture = await createListingFixture(db, 6);
+    await db.insert(connectionGrants).values({ companyId: fixture.company.id, connectionId: fixture.connection.id,
+      kind: "organization", status: "active", isDefault: true });
+    let calls = 0;
+    const gateway = createToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "tools/call") {
+        calls += 1;
+        await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
+          .where(eq(toolMcpGatewayTokens.id, fixture.token.id));
+        await gateway.cleanupExpiredSessions();
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
+        : { content: [{ type: "text", text: "fixture result" }] } }), { headers: { "content-type": "application/json" } });
+    } });
+    const tools = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const tool = tools.find((entry) => entry.catalogEntryId === fixture.entries[4]!.id)!;
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(gateway));
+    const post = () => request(app).post(`/mcp/gateways/${fixture.namedGateway.gatewayPublicId}`)
+      .set("Authorization", `Bearer ${fixture.token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name, arguments: {} } });
+    const response = await post();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(calls).toBe(1);
+    await post().expect(401);
+    expect(calls).toBe(1);
+  });
 
   it("discovers a large catalog concurrently, calls a tool, and rechecks changed policy", async () => {
     const fixture = await createListingFixture(db, 500);
