@@ -125,7 +125,7 @@ function nonBlankString(value: string | null | undefined): string | null {
  * JSON object, which the run indexes on `context_snapshot ->> 'issueId'` also
  * expect.
  */
-function runContextSnapshotString(key: "issueId" | "projectId" | "routineId") {
+export function runContextSnapshotString(key: "issueId" | "projectId" | "routineId" | "wakeCommentId") {
   const field = sql.raw(`'${key}'`);
   return sql<string | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot} -> ${field}) = 'string'
     then ${heartbeatRuns.contextSnapshot} ->> ${field} end`;

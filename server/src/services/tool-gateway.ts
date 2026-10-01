@@ -129,9 +129,11 @@ import {
 } from "./remote-url-credentials.js";
 import {
   createToolAccessDecisionCache,
+  runContextSnapshotString,
   toolAccessPolicyService,
   type ToolAccessDecisionCache,
 } from "./tool-access-policy.js";
+import { toolDiscoveryScheduler, ToolDiscoveryBusyError } from "./tool-discovery-scheduler.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -470,6 +472,7 @@ async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
@@ -480,6 +483,7 @@ async function mapWithConcurrency<T, R>(
       const index = nextIndex;
       nextIndex += 1;
       try {
+        signal?.throwIfAborted();
         results[index] = await mapper(items[index]!);
       } catch (error) {
         // The batch fails with this error, so the other workers stop.
@@ -489,9 +493,12 @@ async function mapWithConcurrency<T, R>(
     }
   }
 
-  await Promise.all(
+  const workers = await Promise.allSettled(
     Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
   );
+  const failure = workers.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+  signal?.throwIfAborted();
   return results;
 }
 
@@ -1599,7 +1606,8 @@ export function createToolGatewayService(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        issueId: runContextSnapshotString("issueId"),
+        projectId: runContextSnapshotString("projectId"),
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId))
@@ -1623,9 +1631,8 @@ export function createToolGatewayService(
       throw new ToolGatewayHttpError(403, "Run is not active", "run_inactive");
     }
 
-    const snapshot = asRecord(run.contextSnapshot);
-    const snapshotIssueId = stringValue(snapshot?.issueId);
-    const snapshotProjectId = stringValue(snapshot?.projectId);
+    const snapshotIssueId = stringValue(run.issueId);
+    const snapshotProjectId = stringValue(run.projectId);
     if (
       (input.issueId && snapshotIssueId && input.issueId !== snapshotIssueId) ||
       (input.projectId &&
@@ -2722,11 +2729,12 @@ export function createToolGatewayService(
     tools: readonly T[],
     inputForTool: (tool: T) => ToolAccessDecisionInput,
     cache: ToolAccessDecisionCache = createToolAccessDecisionCache(),
+    signal?: AbortSignal,
   ): Promise<Array<{ tool: T; decision: ToolAccessDecision }>> {
     return mapWithConcurrency(tools, LISTING_DECISION_CONCURRENCY, async (tool) => ({
       tool,
       decision: await policyService.decide(inputForTool(tool), { cache }),
-    }));
+    }), signal);
   }
 
   function policyErrorStatus(decision: ToolAccessDecision) {
@@ -2958,7 +2966,23 @@ export function createToolGatewayService(
 
   async function listToolsForContext(
     session: ToolGatewaySession,
+    signal?: AbortSignal,
   ): Promise<ToolGatewayDescriptor[]> {
+    try {
+      return await toolDiscoveryScheduler.run(() => buildToolsForContext(session, signal), signal);
+    } catch (error) {
+      if (error instanceof ToolDiscoveryBusyError) {
+        throw new ToolGatewayHttpError(503, error.message, "tool_discovery_busy");
+      }
+      throw error;
+    }
+  }
+
+  async function buildToolsForContext(
+    session: ToolGatewaySession,
+    signal?: AbortSignal,
+  ): Promise<ToolGatewayDescriptor[]> {
+    signal?.throwIfAborted();
     if (session.agentId) {
       await assertAgentInCompany(session.companyId, session.agentId);
     }
@@ -2983,6 +3007,7 @@ export function createToolGatewayService(
       tools,
       (tool) => policyInputForTool({ session, tool }),
       decisionCache,
+      signal,
     );
     const visibleTools = decisions
       .filter(
@@ -3007,6 +3032,7 @@ export function createToolGatewayService(
         onDemandTargets,
         (tool) => policyInputForTool({ session, tool }),
         decisionCache,
+        signal,
       );
       if (
         targetDecisions.some(
@@ -8782,7 +8808,9 @@ export function createToolGatewayService(
       gatewayPublicId?: string | null;
       bearerToken: string;
       callerHeaders?: Record<string, string | string[] | undefined>;
+      signal?: AbortSignal;
     }): Promise<ToolGatewayDescriptor[]> {
+      input.signal?.throwIfAborted();
       const session = await namedGatewaySessionFromBearer({
         gatewayId: input.gatewayId ?? null,
         gatewayPublicId: input.gatewayPublicId ?? null,
@@ -8791,7 +8819,7 @@ export function createToolGatewayService(
         callerHeaders: input.callerHeaders,
       });
       await assertGatewayTokenAction(session, "tools/list");
-      const tools = await listToolsForContext(session);
+      const tools = await listToolsForContext(session, input.signal);
       await writeAudit({
         session,
         companyId: session.companyId,
@@ -8803,7 +8831,7 @@ export function createToolGatewayService(
           decision: "allow",
           reasonCode: "named_gateway_discovery_filtered",
           visibleToolCount: tools.length,
-          visibleTools: tools.map((tool) => tool.name),
+          visibleToolsHash: createHash("sha256").update(JSON.stringify(tools.map((tool) => tool.name).sort())).digest("hex"),
         },
       });
       return tools;
@@ -8882,9 +8910,11 @@ export function createToolGatewayService(
 
     async listToolsForSession(
       sessionToken: string,
+      options: { signal?: AbortSignal } = {},
     ): Promise<ToolGatewayDescriptor[]> {
+      options.signal?.throwIfAborted();
       const session = await getActiveSession(sessionToken);
-      const tools = await listToolsForContext(session);
+      const tools = await listToolsForContext(session, options.signal);
       await writeAudit({
         session,
         companyId: session.companyId,
@@ -8896,7 +8926,7 @@ export function createToolGatewayService(
           decision: "allow",
           reasonCode: "discovery_filtered",
           visibleToolCount: tools.length,
-          visibleTools: tools.map((tool) => tool.name),
+          visibleToolsHash: createHash("sha256").update(JSON.stringify(tools.map((tool) => tool.name).sort())).digest("hex"),
         },
       });
       return tools;
@@ -11112,6 +11142,16 @@ export function createToolGatewayService(
 
     async cleanupExpiredSessions(input: { now?: Date } = {}) {
       const now = input.now ?? new Date();
+      const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
+        .from(toolMcpGatewayTokens)
+        .where(lte(toolMcpGatewayTokens.expiresAt, now))
+        .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
+        .limit(500);
+      if (expiredTokens.length > 0) {
+        await db.delete(toolMcpGatewayTokens)
+            .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
+            .returning({ id: toolMcpGatewayTokens.id });
+      }
       const rows = await db
         .delete(toolGatewaySessions)
         .where(lte(toolGatewaySessions.expiresAt, now))

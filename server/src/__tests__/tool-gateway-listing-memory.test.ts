@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -16,7 +16,9 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolMcpGatewayTokens,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type { ToolAccessDecisionInput } from "@paperclipai/shared";
 import {
   createToolAccessDecisionCache,
@@ -28,179 +30,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+import { createListingFixture, recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 type Db = ReturnType<typeof createDb>;
-
-// Real run snapshots carry the task text several times over; a policy check
-// must read only the context ids out of it.
-const LARGE_TASK_TEXT = "Task description. ".repeat(12_000);
-
-/** A second handle on the same connection pool that records every statement. */
-function recordingDb(db: Db) {
-  const statements: string[] = [];
-  const statementParams: unknown[][] = [];
-  const recorded = drizzle(db.$client, {
-    schema: db._.fullSchema,
-    logger: {
-      logQuery: (query: string, params: unknown[]) => {
-        statements.push(query);
-        statementParams.push(params);
-      },
-    },
-  }) as unknown as Db;
-  return { db: recorded, statements, statementParams };
-}
-
-async function createListingFixture(
-  db: Db,
-  toolCount: number,
-  options: { broadBindings?: boolean } = {},
-) {
-  const company = await db.insert(companies).values({
-    name: `Listing ${randomUUID()}`,
-    issuePrefix: `LM${randomUUID().slice(0, 6).toUpperCase()}`,
-  }).returning().then((rows) => rows[0]!);
-  const agent = await db.insert(agents).values({
-    companyId: company.id,
-    name: `Listing Agent ${randomUUID()}`,
-    role: "engineer",
-    adapterType: "process",
-    adapterConfig: {},
-    runtimeConfig: {},
-    permissions: {},
-  }).returning().then((rows) => rows[0]!);
-  const project = await db.insert(projects).values({
-    companyId: company.id,
-    name: `Listing Project ${randomUUID()}`,
-  }).returning().then((rows) => rows[0]!);
-  const issue = await db.insert(issues).values({
-    companyId: company.id,
-    projectId: project.id,
-    title: "Listing work",
-    status: "in_progress",
-    assigneeAgentId: agent.id,
-  }).returning().then((rows) => rows[0]!);
-  const run = await db.insert(heartbeatRuns).values({
-    companyId: company.id,
-    agentId: agent.id,
-    invocationSource: "assignment",
-    status: "running",
-    contextSnapshot: { issueId: issue.id, projectId: project.id, taskMarkdown: LARGE_TASK_TEXT },
-    resultJson: { summary: LARGE_TASK_TEXT },
-  }).returning().then((rows) => rows[0]!);
-  const application = await db.insert(toolApplications).values({
-    companyId: company.id,
-    applicationKey: `listing-${randomUUID().slice(0, 8)}`,
-    name: `Listing MCP ${randomUUID()}`,
-    type: "mcp_http",
-    status: "active",
-  }).returning().then((rows) => rows[0]!);
-  const connection = await db.insert(toolConnections).values({
-    companyId: company.id,
-    applicationId: application.id,
-    name: "Listing connection",
-    uid: `test/${randomUUID()}`,
-    transport: "mcp_remote",
-    status: "active",
-    enabled: true,
-    healthStatus: "ok",
-    credentialPolicy: "shared",
-    config: { url: "https://8.8.8.8/mcp", notes: "connection config ".repeat(500) },
-  }).returning().then((rows) => rows[0]!);
-  const entries = await db.insert(toolCatalogEntries).values(
-    Array.from({ length: toolCount }, (_, index) => ({
-      companyId: company.id,
-      applicationId: application.id,
-      connectionId: connection.id,
-      entryKind: "tool" as const,
-      name: `tool_${String(index).padStart(4, "0")}`,
-      toolName: `tool_${String(index).padStart(4, "0")}`,
-      description: `Fixture tool ${index}`,
-      inputSchema: {
-        type: "object",
-        properties: { query: { type: "string", description: "Query text. ".repeat(40) } },
-      },
-      riskLevel: index % 3 === 0 ? "write" as const : "read" as const,
-      isReadOnly: index % 3 !== 0,
-      isWrite: index % 3 === 0,
-      status: "active" as const,
-      versionHash: randomUUID(),
-      schemaHash: randomUUID(),
-    })),
-  ).returning();
-
-  // The gateway profile allows every tool except one excluded entry. The
-  // company and agent bindings lose to the narrower gateway binding.
-  const gatewayProfile = await db.insert(toolProfiles).values({
-    companyId: company.id,
-    profileKey: `gateway-${randomUUID()}`,
-    name: `Gateway profile ${randomUUID()}`,
-    defaultAction: "allow",
-  }).returning().then((rows) => rows[0]!);
-  await db.insert(toolProfileEntries).values({
-    companyId: company.id,
-    profileId: gatewayProfile.id,
-    selectorType: "catalog_entry",
-    catalogEntryId: entries[1]!.id,
-    effect: "exclude",
-  });
-  const broadProfile = await db.insert(toolProfiles).values({
-    companyId: company.id,
-    profileKey: `broad-${randomUUID()}`,
-    name: `Broad profile ${randomUUID()}`,
-    defaultAction: "deny",
-  }).returning().then((rows) => rows[0]!);
-  if (options.broadBindings !== false) {
-    await db.insert(toolProfileBindings).values([
-      { companyId: company.id, profileId: broadProfile.id, targetType: "company", targetId: company.id },
-      { companyId: company.id, profileId: broadProfile.id, targetType: "agent", targetId: agent.id },
-    ]);
-  }
-  await db.insert(toolPolicies).values([
-    {
-      companyId: company.id,
-      name: `Block one tool ${randomUUID()}`,
-      policyType: "block",
-      priority: 10,
-      selectors: { catalogEntryId: entries[2]!.id },
-    },
-    {
-      companyId: company.id,
-      name: `Review writes ${randomUUID()}`,
-      policyType: "require_approval",
-      priority: 20,
-      selectors: { riskLevel: "write" },
-    },
-  ]);
-  // A grant for another connection: the listing reads it, but it allows nothing here.
-  await db.insert(principalPermissionGrants).values({
-    companyId: company.id,
-    principalType: "agent",
-    principalId: agent.id,
-    permissionKey: "tools:use",
-    scope: { connectionId: randomUUID() },
-  });
-
-  const setupGateway = createToolGatewayService(db);
-  const namedGateway = await setupGateway.createNamedGateway({
-    companyId: company.id,
-    body: { name: `Listing gateway ${randomUUID().slice(0, 8)}`, profileId: gatewayProfile.id },
-  });
-  const token = await setupGateway.createNamedGatewayToken({
-    companyId: company.id,
-    gatewayId: namedGateway.id,
-    body: {
-      name: "Run token",
-      subjectType: "heartbeat_run",
-      subjectId: run.id,
-      clientLabel: "codex",
-      ownerNote: "",
-    },
-  });
-  return { company, agent, project, issue, run, application, connection, entries, namedGateway, token };
-}
 
 describeEmbeddedPostgres("tool gateway listing memory", () => {
   let db!: Db;
@@ -226,6 +61,63 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     const tools = await createToolGatewayService(recorder.db).listToolsForNamedGateway(listing);
     return { tools, statements: recorder.statements, statementParams: recorder.statementParams };
   }
+
+  it("does not load task text when authenticating a named gateway listing", async () => {
+    const fixture = await createListingFixture(db, 3);
+    const { statements } = await measureNamedGatewayListing(fixture);
+    const runReads = statements.filter((query) => query.includes('from "heartbeat_runs"'));
+    expect(runReads.length).toBeGreaterThan(0);
+    expect(runReads.filter((query) => /"context_snapshot"\s*(?:,|from\b)/.test(query))).toEqual([]);
+  });
+
+  it("stops an abandoned listing before catalog reads", async () => {
+    const fixture = await createListingFixture(db, 3);
+    const recorder = recordingDb(db);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(createToolGatewayService(recorder.db).listToolsForNamedGateway({
+      gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(recorder.statements.some((query) => query.includes('from "tool_catalog_entries"'))).toBe(false);
+  });
+
+  it("records a fixed-size discovery summary instead of all tool names", async () => {
+    const fixture = await createListingFixture(db, 50);
+    const { tools } = await measureNamedGatewayListing(fixture);
+    const events = await db.select().from(activityLog).where(eq(activityLog.runId, fixture.run.id));
+    const event = events.find((row) => row.action === "tool_gateway.discovery");
+    expect(event?.details).toMatchObject({
+      visibleToolCount: tools.length, visibleToolsHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(event?.details).not.toHaveProperty("visibleTools");
+  });
+
+  it("keeps query growth bounded with several connections", async () => {
+    const small = await createListingFixture(db, 50, { connectionCount: 4 });
+    const large = await createListingFixture(db, 500, { connectionCount: 4 });
+    const smallListing = await measureNamedGatewayListing(small);
+    const largeListing = await measureNamedGatewayListing(large);
+    expect(largeListing.statements.length).toBe(smallListing.statements.length);
+    expect(largeListing.statements.length).toBeLessThan(100);
+    expect(largeListing.tools.filter((tool) => tool.catalogEntryId)).toHaveLength(498);
+  });
+
+  it("cleans expired named tokens in bounded batches and retains valid tokens", async () => {
+    const fixture = await createListingFixture(db, 3);
+    const service = createToolGatewayService(db);
+    const expired = await service.createNamedGatewayToken({
+      companyId: fixture.company.id, gatewayId: fixture.namedGateway.id,
+      body: { name: "Expired test token", clientLabel: "test", ownerNote: "test" },
+    });
+    const now = new Date();
+    await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(now.getTime() - 1) })
+      .where(eq(toolMcpGatewayTokens.id, expired.id));
+    await service.cleanupExpiredSessions({ now });
+    expect(await db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, expired.id))).toEqual([]);
+    expect(await db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, fixture.token.id))).toHaveLength(1);
+    await expect(service.cleanupExpiredSessions({ now })).resolves.toMatchObject({ deletedCount: 0 });
+  });
 
   it("keeps the query count of a named gateway listing constant from 50 to 500 catalog tools", async () => {
     const small = await createListingFixture(db, 50);
