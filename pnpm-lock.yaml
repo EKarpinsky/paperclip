@@ -1089,8 +1089,8 @@ importers:
   ui:
     dependencies:
       '@assistant-ui/react':
-        specifier: 0.15.21
-        version: 0.15.21(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
+        specifier: 0.15.22
+        version: 0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
       '@base-ui/react':
         specifier: ^1.7.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1372,8 +1372,8 @@ packages:
       react:
         optional: true
 
-  '@assistant-ui/react@0.15.21':
-    resolution: {integrity: sha512-5VID3r2YpYFbx6LLfyOSWwRVf4WOJXYsfSN/C67sbCsJsqqBbxeQpn4MB9g73HcyriBkRwqvHY5XXCguyNqP6Q==}
+  '@assistant-ui/react@0.15.22':
+    resolution: {integrity: sha512-xSLdwMiuw/tVmfZpXBrcs9sdH2e5UJECSi4gQY1eRWdG8/xYykzn81HLmuIQQvIDVSMQo9nNRAO3u2AAFrDq/Q==}
     peerDependencies:
       '@types/react': '*'
       '@types/react-dom': '*'
@@ -9077,7 +9077,7 @@ snapshots:
       - ioredis
       - redis
 
-  '@assistant-ui/react@0.15.21(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))':
+  '@assistant-ui/react@0.15.22(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))':
     dependencies:
       '@assistant-ui/core': 0.3.21(@assistant-ui/store@0.3.15(@assistant-ui/tap@0.9.19(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@assistant-ui/tap@0.9.19(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(assistant-cloud@0.2.3(@opentelemetry/api@1.9.1))(react@19.2.8)
       '@assistant-ui/store': 0.3.15(@assistant-ui/tap@0.9.19(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
