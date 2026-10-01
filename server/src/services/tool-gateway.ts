@@ -127,7 +127,11 @@ import {
   REMOTE_URL_SECRET_CONFIG_PATH,
   remoteUrlCredentialMatchesPublicUrl,
 } from "./remote-url-credentials.js";
-import { toolAccessPolicyService } from "./tool-access-policy.js";
+import {
+  createToolAccessDecisionCache,
+  toolAccessPolicyService,
+  type ToolAccessDecisionCache,
+} from "./tool-access-policy.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -217,6 +221,10 @@ const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // create) so a live create keeps its own row.
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
+// A tool listing decides access for every tool in the company. The decisions
+// of one listing share a read cache, so this cap only limits how many of them
+// (and their uncached reads, such as rate-limit counters) run at the same time.
+const LISTING_DECISION_CONCURRENCY = 16;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -456,6 +464,35 @@ const BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES: Record<
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let failed = false;
+
+  async function worker() {
+    while (!failed && nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = await mapper(items[index]!);
+      } catch (error) {
+        // The batch fails with this error, so the other workers stop.
+        failed = true;
+        throw error;
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+  return results;
 }
 
 const sensitivePassthroughHeaderPattern =
@@ -1216,49 +1253,81 @@ export function createToolGatewayService(
     return [...BUILTIN_TOOLS, ...pluginTools()];
   }
 
+  function connectedMcpConnectionFilter(companyId: string) {
+    return and(
+      eq(toolConnections.companyId, companyId),
+      inArray(toolConnections.transport, ["mcp_remote", "local_stdio", "rest_api"]),
+      eq(toolConnections.status, "active"),
+      eq(toolConnections.enabled, true),
+      // A personal connection has no company-level credential to probe. A
+      // credential-less health sweep can therefore mark it as errored even
+      // while the responsible user's grant is valid. Keep its cached active
+      // catalog discoverable; execution resolves and validates that user's
+      // grant, and a successful call restores the shared health indicator.
+      or(
+        inArray(toolConnections.healthStatus, ["ok", "healthy"]),
+        eq(toolConnections.credentialPolicy, "per_user"),
+      ),
+      eq(toolApplications.companyId, companyId),
+      inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api"]),
+      eq(toolApplications.status, "active"),
+    );
+  }
+
   async function connectedMcpToolsForCompany(
     companyId: string,
   ): Promise<ToolGatewayDescriptor[]> {
-    const rows = await db
-      .select({
-        catalogEntry: toolCatalogEntries,
-        connection: toolConnections,
-        application: toolApplications,
-      })
-      .from(toolCatalogEntries)
-      .innerJoin(
-        toolConnections,
-        eq(toolCatalogEntries.connectionId, toolConnections.id),
-      )
-      .innerJoin(
-        toolApplications,
-        eq(toolConnections.applicationId, toolApplications.id),
-      )
-      .where(
-        and(
-          eq(toolCatalogEntries.companyId, companyId),
-          eq(toolCatalogEntries.entryKind, "tool"),
-          eq(toolCatalogEntries.status, "active"),
-          isNull(toolCatalogEntries.quarantinedAt),
-          eq(toolConnections.companyId, companyId),
-          inArray(toolConnections.transport, ["mcp_remote", "local_stdio", "rest_api"]),
-          eq(toolConnections.status, "active"),
-          eq(toolConnections.enabled, true),
-          // A personal connection has no company-level credential to probe. A
-          // credential-less health sweep can therefore mark it as errored even
-          // while the responsible user's grant is valid. Keep its cached active
-          // catalog discoverable; execution resolves and validates that user's
-          // grant, and a successful call restores the shared health indicator.
-          or(
-            inArray(toolConnections.healthStatus, ["ok", "healthy"]),
-            eq(toolConnections.credentialPolicy, "per_user"),
-          ),
-          eq(toolApplications.companyId, companyId),
-          inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api"]),
-          eq(toolApplications.status, "active"),
-        ),
-      )
-      .orderBy(toolConnections.name, toolCatalogEntries.name);
+    // Read each connection and application row once. Selecting them in the
+    // catalog join repeats the full connection row (config included) for
+    // every tool, and one connection can expose hundreds of tools. Both reads
+    // share one read-only snapshot, so they agree like a single join.
+    const { connectionRows, catalogRows } = await db.transaction(
+      async (tx) => {
+        const connectionRows = await tx
+          .select({
+            connection: toolConnections,
+            application: toolApplications,
+          })
+          .from(toolConnections)
+          .innerJoin(
+            toolApplications,
+            eq(toolConnections.applicationId, toolApplications.id),
+          )
+          .where(connectedMcpConnectionFilter(companyId));
+        if (connectionRows.length === 0)
+          return { connectionRows, catalogRows: [] };
+        const catalogRows = await tx
+          .select({ catalogEntry: toolCatalogEntries })
+          .from(toolCatalogEntries)
+          .innerJoin(
+            toolConnections,
+            eq(toolCatalogEntries.connectionId, toolConnections.id),
+          )
+          .innerJoin(
+            toolApplications,
+            eq(toolConnections.applicationId, toolApplications.id),
+          )
+          .where(
+            and(
+              eq(toolCatalogEntries.companyId, companyId),
+              eq(toolCatalogEntries.entryKind, "tool"),
+              eq(toolCatalogEntries.status, "active"),
+              isNull(toolCatalogEntries.quarantinedAt),
+              connectedMcpConnectionFilter(companyId),
+            ),
+          )
+          .orderBy(toolConnections.name, toolCatalogEntries.name);
+        return { connectionRows, catalogRows };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+    const connectionRowsById = new Map(
+      connectionRows.map((row) => [row.connection.id, row]),
+    );
+    const rows = catalogRows.flatMap(({ catalogEntry }) => {
+      const connectionRow = connectionRowsById.get(catalogEntry.connectionId);
+      return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
+    });
 
     const eligibleRows = rows.filter(
       ({ catalogEntry, connection, application }) =>
@@ -2633,6 +2702,22 @@ export function createToolGatewayService(
     };
   }
 
+  /**
+   * Decides access for each tool of one listing. All decisions of the listing
+   * share one actor and run context, so they share one read cache: a listing
+   * reads the agent, run, profiles and policies once, not once per tool.
+   */
+  async function decideToolsForListing<T extends ToolGatewayDescriptor>(
+    tools: readonly T[],
+    inputForTool: (tool: T) => ToolAccessDecisionInput,
+    cache: ToolAccessDecisionCache = createToolAccessDecisionCache(),
+  ): Promise<Array<{ tool: T; decision: ToolAccessDecision }>> {
+    return mapWithConcurrency(tools, LISTING_DECISION_CONCURRENCY, async (tool) => ({
+      tool,
+      decision: await policyService.decide(inputForTool(tool), { cache }),
+    }));
+  }
+
   function policyErrorStatus(decision: ToolAccessDecision) {
     if (decision.decision === "rate_limited") return 429;
     return 403;
@@ -2809,13 +2894,8 @@ export function createToolGatewayService(
     const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(
       isOnDemandRemoteTool,
     );
-    const decisions = await Promise.all(
-      tools.map(async (tool) => ({
-        tool,
-        decision: await policyService.decide(
-          policyInputForTool({ session, tool }),
-        ),
-      })),
+    const decisions = await decideToolsForListing(tools, (tool) =>
+      policyInputForTool({ session, tool }),
     );
     return decisions
       .filter(
@@ -2887,13 +2967,11 @@ export function createToolGatewayService(
         (tool.providerType !== "paperclip_self" &&
           tool.providerType !== "paperclip_plugin"),
     );
-    const decisions = await Promise.all(
-      tools.map(async (tool) => {
-        const decision = await policyService.decide(
-          policyInputForTool({ session, tool }),
-        );
-        return { tool, decision };
-      }),
+    const decisionCache = createToolAccessDecisionCache();
+    const decisions = await decideToolsForListing(
+      tools,
+      (tool) => policyInputForTool({ session, tool }),
+      decisionCache,
     );
     const visibleTools = decisions
       .filter(
@@ -2914,13 +2992,10 @@ export function createToolGatewayService(
           : tool,
       );
     if (onDemandTargets.length > 0) {
-      const targetDecisions = await Promise.all(
-        onDemandTargets.map(async (tool) => {
-          const decision = await policyService.decide(
-            policyInputForTool({ session, tool }),
-          );
-          return { tool, decision };
-        }),
+      const targetDecisions = await decideToolsForListing(
+        onDemandTargets,
+        (tool) => policyInputForTool({ session, tool }),
+        decisionCache,
       );
       if (
         targetDecisions.some(
@@ -8821,16 +8896,11 @@ export function createToolGatewayService(
       agentId: string;
     }): Promise<AgentToolDescriptor[]> {
       await assertAgentInCompany(input.companyId, input.agentId);
-      const decisions = await Promise.all(
-        pluginTools().map(async (tool) => {
-          const decision = await policyService.decide(
-            policyInputForAgentTool({
-              companyId: input.companyId,
-              agentId: input.agentId,
-              tool,
-            }),
-          );
-          return { tool, decision };
+      const decisions = await decideToolsForListing(pluginTools(), (tool) =>
+        policyInputForAgentTool({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          tool,
         }),
       );
       return decisions
@@ -8887,33 +8957,32 @@ export function createToolGatewayService(
         input.companyId,
         input.connectionId,
       );
-      const decisions = await Promise.all(
-        tools.map(async (tool) => {
-          const decision = await policyService.decide(
-            policyInputForAgentTool({
-              companyId: input.companyId,
-              agentId: input.agentId,
-              tool,
-            }),
-          );
-          const testDecision =
-            decision.decision === "require_approval"
-              ? "ask_first"
-              : decision.allowed
-                ? "allowed"
-                : "off";
-          return {
-            toolName: tool.upstreamToolName ?? tool.name,
-            gatewayToolName: tool.name,
-            displayName: tool.displayName,
-            risk: tool.risk,
-            decision: testDecision,
-            reasonCode: decision.reasonCode,
-            matchedPolicyIds: decision.matchedPolicyIds,
-            effectiveProfileIds: decision.effectiveProfileIds,
-          };
-        }),
-      );
+      const decisions = (
+        await decideToolsForListing(tools, (tool) =>
+          policyInputForAgentTool({
+            companyId: input.companyId,
+            agentId: input.agentId,
+            tool,
+          }),
+        )
+      ).map(({ tool, decision }) => {
+        const testDecision =
+          decision.decision === "require_approval"
+            ? "ask_first"
+            : decision.allowed
+              ? "allowed"
+              : "off";
+        return {
+          toolName: tool.upstreamToolName ?? tool.name,
+          gatewayToolName: tool.name,
+          displayName: tool.displayName,
+          risk: tool.risk,
+          decision: testDecision,
+          reasonCode: decision.reasonCode,
+          matchedPolicyIds: decision.matchedPolicyIds,
+          effectiveProfileIds: decision.effectiveProfileIds,
+        };
+      });
       const lastChange = await summarizeAccessLastChange({
         companyId: input.companyId,
         connectionId: input.connectionId,
