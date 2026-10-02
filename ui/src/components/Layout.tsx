@@ -714,6 +714,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </div>
           <div className={cn(
             isMobile ? "block" : "flex flex-1 min-h-0",
+            // Clip the task page's slide below the fold so it never adds
+            // scrollable height. clip (not hidden) keeps the sticky composer
+            // working because it doesn't create a scroll container.
+            isMobile && isTaskDetailRoute && "overflow-y-clip",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
             {!isMobile && keepsPrimarySidebar ? (
@@ -735,12 +739,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               // Publish the pinned-composer bottom offset to descendants
               // (PAP-495): while the auto-hiding mobile nav is on screen, raise
               // it to the nav height so a sticky composer clears the nav; drop
-              // it back to the safe-area dock when the nav hides. Desktop leaves
-              // the token at its :root default.
+              // it back to the safe-area dock when the nav hides. Task pages
+              // keep the nav-height offset and slide the whole page down
+              // instead (see the className below). Desktop leaves the token at
+              // its :root default.
               style={
                 isMobile
                   ? ({
-                      "--tc-composer-bottom": mobileNavVisible
+                      "--tc-composer-bottom": mobileNavVisible || isTaskDetailRoute
                         ? "var(--tc-composer-visible-nav-offset)"
                         : "var(--tc-composer-hidden-nav-offset)",
                     } as CSSProperties)
@@ -755,11 +761,18 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 // Reserve the scrollbar gutter on desktop so pages whose height
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
+                // On mobile task pages the bottom padding never changes with
+                // the nav. Changing it resized the page on every nav toggle,
+                // which moved the scroll position, which toggled the nav again;
+                // at the end of a thread the last messages slid under the
+                // composer. The page slides with the nav instead, so the
+                // composer still docks at the bottom when the nav hides.
                 isMobile
                   ? isTaskDetailRoute
-                    ? mobileNavVisible
-                      ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
-                      : "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
+                    ? cn(
+                        "overflow-visible pb-(--tc-composer-visible-nav-offset) transition-[translate] duration-200 ease-out",
+                        !mobileNavVisible && "translate-y-(--tc-composer-nav-slide)",
+                      )
                     : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
