@@ -189,12 +189,18 @@ export function approvalRoutes(
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     lostIssueIds: Set<string>;
   }> {
+    let linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     try {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      return { linkedIssues, lostIssueIds: await lostReviewPathIssueIds(approval.companyId, linkedIssues) };
+      linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, "failed to load linked issues after an approval decision");
       return { linkedIssues: [], lostIssueIds: new Set<string>() };
+    }
+    try {
+      return { linkedIssues, lostIssueIds: await lostReviewPathIssueIds(approval.companyId, linkedIssues) };
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, "failed to load review attention after an approval decision");
+      return { linkedIssues, lostIssueIds: new Set<string>() };
     }
   }
 

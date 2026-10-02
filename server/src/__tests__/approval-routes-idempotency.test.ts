@@ -28,6 +28,10 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
@@ -41,6 +45,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -136,6 +143,8 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockReset();
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -517,6 +526,17 @@ describe("approval routes idempotent retries", () => {
         payload: expect.objectContaining({ approvalId: "approval-9", issueId: null, issueIds: [] }),
       }),
     );
+  });
+
+  it("keeps the linked issue on the requester wake when the review-attention lookup fails", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.reject.mockResolvedValue({ approval: decidedApproval("rejected"), applied: true });
+    mockIssueService.listReviewAttention.mockRejectedValue(new Error("database unavailable"));
+
+    const res = await request(await createApp()).post("/api/approvals/approval-9/reject").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectRequesterWake("approval_rejected");
   });
 
   it("does not wake anyone when a rejected approval has no requesting agent", async () => {
