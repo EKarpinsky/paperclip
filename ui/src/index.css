@@ -389,6 +389,10 @@
      stay put. The classic layout docks at --sz-calc-8 instead. */
   --tc-composer-nav-slide: calc(var(--tc-composer-visible-nav-offset) - var(--tc-composer-hidden-nav-offset));
   --tc-composer-classic-nav-slide: calc(var(--tc-composer-visible-nav-offset) - var(--sz-calc-8));
+  /* The mobile bottom nav's hide/show motion. The task page slide uses the
+     same values so the page and the nav move together. */
+  --motion-mobile-nav-duration: 200ms;
+  --motion-mobile-nav-ease: cubic-bezier(0, 0, 0.2, 1);
 }
 
 .dark {

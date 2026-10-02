@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1351,7 +1352,31 @@ describe("Layout", () => {
     });
   });
 
-  async function renderLayoutRoot(): Promise<{
+  async function renderMobileTaskLayout(LayoutComponent: ComponentType) {
+    currentPathname = "/PAP/issues/PAP-1";
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+    const { root } = await renderLayoutRoot(LayoutComponent);
+    await flushReact();
+    return {
+      main: container.querySelector<HTMLElement>("#main-content")!,
+      scrollTo: (top: number) =>
+        act(async () => {
+          Object.defineProperty(window, "scrollY", { value: top, configurable: true });
+          window.dispatchEvent(new Event("scroll"));
+        }),
+      cleanup: async () => {
+        if (scrollY) Object.defineProperty(window, "scrollY", scrollY);
+        else Reflect.deleteProperty(window, "scrollY");
+        await act(async () => {
+          root.unmount();
+        });
+      },
+    };
+  }
+
+  async function renderLayoutRoot(LayoutComponent: ComponentType = Layout): Promise<{
     root: ReturnType<typeof createRoot>;
     rootEl: HTMLElement;
   }> {
@@ -1362,7 +1387,7 @@ describe("Layout", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Layout />
+          <LayoutComponent />
         </QueryClientProvider>,
       );
     });
@@ -1399,31 +1424,9 @@ describe("Layout", () => {
   ])(
     "$name keeps the mobile task page height fixed and slides it when the nav hides",
     async ({ LayoutComponent, slideClass }) => {
-      currentPathname = "/PAP/issues/PAP-1";
-      mockSidebarState.isMobile = true;
-      mockSidebarState.sidebarOpen = false;
-      const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-      const scrollTo = (top: number) =>
-        act(async () => {
-          Object.defineProperty(window, "scrollY", { value: top, configurable: true });
-          window.dispatchEvent(new Event("scroll"));
-        });
-      const root = createRoot(container);
-      const queryClient = new QueryClient({
-        defaultOptions: { queries: { retry: false } },
-      });
+      const { main, scrollTo, cleanup } = await renderMobileTaskLayout(LayoutComponent);
 
       try {
-        await act(async () => {
-          root.render(
-            <QueryClientProvider client={queryClient}>
-              <LayoutComponent />
-            </QueryClientProvider>,
-          );
-        });
-        await flushReact();
-
-        const main = container.querySelector<HTMLElement>("#main-content")!;
         const clipWrapper = main.closest(".overflow-y-clip");
         expect(clipWrapper).not.toBeNull();
         expect(main.style.getPropertyValue("--tc-composer-bottom")).toBe(
@@ -1447,11 +1450,31 @@ describe("Layout", () => {
         expect(main.classList.contains(slideClass)).toBe(false);
         expect(main.classList.contains("pb-(--tc-composer-visible-nav-offset)")).toBe(true);
       } finally {
-        if (scrollY) Object.defineProperty(window, "scrollY", scrollY);
-        else Reflect.deleteProperty(window, "scrollY");
-        await act(async () => {
-          root.unmount();
-        });
+        await cleanup();
+      }
+    },
+  );
+
+  it.each([
+    { name: "Layout", LayoutComponent: Layout, hiddenPadding: "pb-(--tc-composer-hidden-nav-offset)" },
+    { name: "ProductionLayout", LayoutComponent: ProductionLayout, hiddenPadding: "pb-(--sz-calc-14)" },
+  ])(
+    "$name keeps the padding swap for the Classic Task Interface, whose composer doesn't follow the nav",
+    async ({ LayoutComponent, hiddenPadding }) => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableApps: true,
+        enableClassicTaskInterface: true,
+      });
+      const { main, scrollTo, cleanup } = await renderMobileTaskLayout(LayoutComponent);
+
+      try {
+        await scrollTo(400);
+
+        expect(main.closest(".overflow-y-clip")).toBeNull();
+        expect(main.classList.contains(hiddenPadding)).toBe(true);
+        expect([...main.classList].some((name) => name.startsWith("translate-y-"))).toBe(false);
+      } finally {
+        await cleanup();
       }
     },
   );

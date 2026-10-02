@@ -45,6 +45,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useTaskPageSlidesWithMobileNav } from "../hooks/useTaskPageSlidesWithMobileNav";
 import { healthApi } from "../api/health";
 import {
   resolveArchivedCompanyBounce,
@@ -154,6 +155,7 @@ export function Layout() {
     location.pathname,
     companyPrefix,
   );
+  const taskPageSlidesWithNav = useTaskPageSlidesWithMobileNav(location.pathname, companyPrefix);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
@@ -727,7 +729,7 @@ export function Layout() {
               // Clip the task page's slide below the fold so it never adds
               // scrollable height. clip (not hidden) keeps the sticky composer
               // working because it doesn't create a scroll container.
-              isMobile && isTaskDetailRoute && "overflow-y-clip",
+              isMobile && taskPageSlidesWithNav && "overflow-y-clip",
             )}>
               <main
                 id="main-content"
@@ -743,7 +745,7 @@ export function Layout() {
                 style={
                   isMobile
                     ? ({
-                      "--tc-composer-bottom": mobileNavVisible || isTaskDetailRoute
+                      "--tc-composer-bottom": mobileNavVisible || taskPageSlidesWithNav
                           ? "var(--tc-composer-visible-nav-offset)"
                           : "var(--sz-calc-8)",
                       } as CSSProperties)
@@ -757,14 +759,17 @@ export function Layout() {
                   // On mobile task pages the bottom padding never changes with
                   // the nav: changing it resized the page on every nav toggle,
                   // which moved the scroll position and toggled the nav again.
-                  // The page slides with the nav instead.
+                  // The page slides with the nav instead. The Classic Task
+                  // Interface keeps the padding swap (see taskPageSlidesWithNav).
                   isMobile
-                    ? isTaskDetailRoute
+                    ? taskPageSlidesWithNav
                       ? cn(
-                          "overflow-visible pb-(--tc-composer-visible-nav-offset) transition-[translate] duration-200 ease-out",
+                          "overflow-visible pb-(--tc-composer-visible-nav-offset) transition-[translate] duration-(--motion-mobile-nav-duration) ease-(--motion-mobile-nav-ease)",
                           !mobileNavVisible && "translate-y-(--tc-composer-classic-nav-slide)",
                         )
-                      : "overflow-visible pb-(--sz-calc-14)"
+                      : isTaskDetailRoute && mobileNavVisible
+                        ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
+                        : "overflow-visible pb-(--sz-calc-14)"
                     : "overflow-auto [scrollbar-gutter:stable]",
                 )}
               >
