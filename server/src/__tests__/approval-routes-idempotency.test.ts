@@ -500,6 +500,25 @@ describe("approval routes idempotent retries", () => {
     expectRequesterWake("approval_revision_requested");
   });
 
+  it("still wakes the requesting agent when the revision's linked-issue lookup fails", async () => {
+    mockApprovalService.getById.mockResolvedValue(decidedApproval("pending"));
+    mockApprovalService.requestRevision.mockResolvedValue(decidedApproval("revision_requested"));
+    mockIssueApprovalService.listIssuesForApproval.mockRejectedValue(new Error("database unavailable"));
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/request-revision")
+      .send({ decisionNote: "Tighten the copy" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-7",
+      expect.objectContaining({
+        reason: "approval_revision_requested",
+        payload: expect.objectContaining({ approvalId: "approval-9", issueId: null, issueIds: [] }),
+      }),
+    );
+  });
+
   it("does not wake anyone when a rejected approval has no requesting agent", async () => {
     mockApprovalService.getById.mockResolvedValue(decidedApproval("pending", null));
     mockApprovalService.reject.mockResolvedValue({ approval: decidedApproval("rejected", null), applied: true });

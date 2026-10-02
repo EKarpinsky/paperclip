@@ -185,6 +185,19 @@ export function approvalRoutes(
     }
   }
 
+  async function linkedIssuesForDecision(approval: { id: string; companyId: string }): Promise<{
+    linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
+    lostIssueIds: Set<string>;
+  }> {
+    try {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      return { linkedIssues, lostIssueIds: await lostReviewPathIssueIds(approval.companyId, linkedIssues) };
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, "failed to load linked issues after an approval decision");
+      return { linkedIssues: [], lostIssueIds: new Set<string>() };
+    }
+  }
+
   async function wakeRequesterAfterDecision(input: {
     approval: { id: string; companyId: string; status: string; requestedByAgentId: string | null };
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
@@ -364,9 +377,8 @@ export function approvalRoutes(
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const { linkedIssues, lostIssueIds: lostReviewIssueIds } = await linkedIssuesForDecision(approval);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
-      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -414,8 +426,7 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
+      const { linkedIssues, lostIssueIds: lostReviewIssueIds } = await linkedIssuesForDecision(approval);
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -468,11 +479,11 @@ export function approvalRoutes(
         details: { type: approval.type },
       });
 
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const { linkedIssues, lostIssueIds } = await linkedIssuesForDecision(approval);
       await wakeRequesterAfterDecision({
         approval,
         linkedIssues,
-        lostIssueIds: await lostReviewPathIssueIds(approval.companyId, linkedIssues),
+        lostIssueIds,
         requestedByUserId: req.actor.userId ?? "board",
       });
 
