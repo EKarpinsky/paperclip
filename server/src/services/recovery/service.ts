@@ -1,5 +1,4 @@
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
-import { isClaudeSpendLimitError } from "@paperclipai/adapter-claude-local/server";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
@@ -673,11 +672,9 @@ export function classifyAdapterFailureForRecovery(
     };
   }
 
-  const parsedClockReset = isClaudeSpendLimitError({
-    errorMessage: latestRun.error,
-    stdout: readNonEmptyString(resultJson.stdout),
-    stderr: readNonEmptyString(resultJson.stderr),
-  })
+  // The adapter sets this when the provider reported a quota that has no reset
+  // time of its own, so a reset elsewhere in the run text is not this quota's.
+  const parsedClockReset = asBoolean(resultJson.providerQuotaResetUnknown, false)
     ? null
     : parseProviderQuotaClockReset(error, now);
   if (parsedClockReset) {
