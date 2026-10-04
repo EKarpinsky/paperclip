@@ -513,8 +513,8 @@ export function extractClaudeRetryNotBefore(
   },
   now = new Date(),
 ): Date | null {
+  if (isClaudeSpendLimitError(input)) return null;
   const haystack = buildClaudeTransientHaystack(input);
-  if (CLAUDE_SPEND_LIMIT_RE.test(haystack)) return null;
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
@@ -563,14 +563,16 @@ export function isClaudeProviderQuotaError(input: {
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
-  return CLAUDE_PROVIDER_QUOTA_RE.test(haystack) || CLAUDE_SPEND_LIMIT_RE.test(haystack);
+  return CLAUDE_PROVIDER_QUOTA_RE.test(haystack) || isClaudeSpendLimitError(input);
 }
 
+// Only the failure itself, never stdout: an agent's streamed output can quote
+// a spend-limit message while the run fails on a different limit.
 export function isClaudeSpendLimitError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack(input));
+  return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack({ ...input, stdout: null }));
 }

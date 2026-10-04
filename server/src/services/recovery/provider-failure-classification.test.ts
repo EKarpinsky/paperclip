@@ -145,6 +145,22 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("keeps a weekly limit's reset when only the run summary quotes a spend limit", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "Claude run failed: subtype=success: You've hit your weekly limit · resets 5pm (America/Chicago)",
+      resultJson: {
+        errorFamily: "provider_quota",
+        summary: "The user saw \"You've hit your monthly spend limit\" yesterday.",
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-10-04T22:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",

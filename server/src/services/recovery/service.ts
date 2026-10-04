@@ -673,7 +673,7 @@ export function classifyAdapterFailureForRecovery(
     };
   }
 
-  const parsedClockReset = isClaudeSpendLimitError({ errorMessage: error })
+  const parsedClockReset = isClaudeSpendLimitError({ errorMessage: latestRun.error })
     ? null
     : parseProviderQuotaClockReset(error, now);
   if (parsedClockReset) {

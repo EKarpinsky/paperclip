@@ -238,6 +238,21 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(extractClaudeRetryNotBefore(input, now)).toBeNull();
   });
 
+  it("keeps a weekly limit's reset when only the agent's stdout quotes a spend limit", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const input = {
+      stdout: JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "The user saw \"You've hit your monthly spend limit\" yesterday." }] },
+      }),
+      errorMessage: "You've hit your weekly limit · resets 5am (America/Toronto)",
+    };
+
+    expect(isClaudeSpendLimitError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(extractClaudeRetryNotBefore(input, now)?.toISOString()).toBe("2026-10-05T09:00:00.000Z");
+  });
+
   it.each([
     "Agent is paused because its budget hard-stop was reached.",
     "Configured budget limit reached",
