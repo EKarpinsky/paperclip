@@ -1549,6 +1549,8 @@ describe("claude execute", () => {
       })],
     ["unparsed stderr", (commandPath: string, message: string) =>
       writeTextFailingClaudeCommand(commandPath, { stderr: `${message}\n` })],
+    ["unparsed stdout", (commandPath: string, message: string) =>
+      writeTextFailingClaudeCommand(commandPath, { stdout: `${message}\n` })],
   ])("classifies the Claude spend limit from %s as provider quota without a retry time", async (_source, writeCommand) => {
     const message =
       "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)";
@@ -1576,7 +1578,7 @@ describe("claude execute", () => {
       expect(result.exitCode).toBe(1);
       expect(result.errorCode).toBe("provider_quota");
       expect(result.errorFamily).toBe("provider_quota");
-      expect(result.errorMessage ?? "").toContain("monthly spend limit");
+      expect([result.errorMessage ?? "", JSON.stringify(result.resultJson ?? {})].join("\n")).toContain("monthly spend limit");
       expect(result.retryNotBefore ?? null).toBeNull();
       expect(result.resultJson?.errorFamily).toBe("provider_quota");
       expect(result.resultJson?.retryNotBefore ?? null).toBeNull();

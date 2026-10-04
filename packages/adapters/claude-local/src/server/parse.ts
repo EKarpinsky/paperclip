@@ -566,13 +566,18 @@ export function isClaudeProviderQuotaError(input: {
   return CLAUDE_PROVIDER_QUOTA_RE.test(haystack) || isClaudeSpendLimitError(input);
 }
 
-// Only the failure itself, never stdout: an agent's streamed output can quote
-// a spend-limit message while the run fails on a different limit.
+// Stream-json events on stdout carry the agent's own output, which can quote a
+// spend-limit message while the run fails on a different limit. Only the
+// failure fields and the CLI's plain-text stdout lines count.
 export function isClaudeSpendLimitError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack({ ...input, stdout: null }));
+  const cliStdout = (input.stdout ?? "")
+    .split(/\r?\n/)
+    .filter((line) => !parseJson(line.trim()))
+    .join("\n");
+  return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack({ ...input, stdout: cliStdout }));
 }

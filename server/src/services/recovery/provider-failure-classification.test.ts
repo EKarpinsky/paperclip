@@ -145,6 +145,23 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("uses the default quota backoff for a spend limit the CLI printed only on stdout", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "Claude exited with code 1",
+      resultJson: {
+        stdout: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 4pm (America/Chicago)\n",
+        stderr: "",
+        errorFamily: "provider_quota",
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("keeps a weekly limit's reset when only the run summary quotes a spend limit", () => {
     const now = new Date("2026-10-04T12:00:00.000Z");
     expect(classifyAdapterFailureForRecovery({

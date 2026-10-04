@@ -238,6 +238,20 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(extractClaudeRetryNotBefore(input, now)).toBeNull();
   });
 
+  it("classifies a spend limit the CLI printed only as plain-text stdout", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const input = {
+      parsed: null,
+      stdout: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)\n",
+      stderr: "",
+      errorMessage: "Claude exited with code 1",
+    };
+
+    expect(isClaudeSpendLimitError(input)).toBe(true);
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(extractClaudeRetryNotBefore(input, now)).toBeNull();
+  });
+
   it("keeps a weekly limit's reset when only the agent's stdout quotes a spend limit", () => {
     const now = new Date("2026-10-04T12:00:00.000Z");
     const input = {
