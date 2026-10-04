@@ -1,4 +1,5 @@
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
+import { isClaudeSpendLimitError } from "@paperclipai/adapter-claude-local/server";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
@@ -672,7 +673,9 @@ export function classifyAdapterFailureForRecovery(
     };
   }
 
-  const parsedClockReset = parseProviderQuotaClockReset(error, now);
+  const parsedClockReset = isClaudeSpendLimitError({ errorMessage: error })
+    ? null
+    : parseProviderQuotaClockReset(error, now);
   if (parsedClockReset) {
     return {
       kind: "provider_quota",

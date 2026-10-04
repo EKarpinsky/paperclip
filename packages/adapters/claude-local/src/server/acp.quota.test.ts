@@ -174,6 +174,13 @@ it.each([
   expect(logs).toContain(title);
 });
 
+it("classifies a typed spend limit as quota without the weekly limit's reset time", () => {
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)",
+  }, now)).toEqual({ errorCode: "provider_quota", errorFamily: "provider_quota" });
+});
+
 it("does not infer quota from the historical generic terminal-limit error", () => {
   expect(classifyClaudeTerminalSessionFailure({
     category: "limit",

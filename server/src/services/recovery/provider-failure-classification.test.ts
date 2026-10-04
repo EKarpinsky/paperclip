@@ -130,6 +130,22 @@ describe("classifyAdapterFailureForRecovery", () => {
   });
 
   it.each([
+    "Claude run failed: subtype=success: You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)",
+    "Claude run failed: subtype=success: You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 4pm (America/Chicago)",
+  ])("uses the default quota backoff instead of another limit's reset for a Claude spend limit: %s", (error) => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error,
+      resultJson: { errorFamily: "provider_quota" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
+  it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
     "API key is not set",
