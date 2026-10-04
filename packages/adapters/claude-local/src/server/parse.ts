@@ -581,3 +581,13 @@ export function isClaudeSpendLimitError(input: {
     .join("\n");
   return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack({ ...input, stdout: cliStdout }));
 }
+
+// Run-result field that tells recovery this quota has no reset time of its own.
+export function claudeProviderQuotaResetFields(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): { providerQuotaResetUnknown?: true } {
+  return isClaudeSpendLimitError(input) ? { providerQuotaResetUnknown: true } : {};
+}

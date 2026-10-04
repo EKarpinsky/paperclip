@@ -163,6 +163,25 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("ignores a reset in an ACP failure's provider text when the adapter reports no reset time of its own", () => {
+    const now = new Date("2026-10-04T12:00:00.000Z");
+    const title = "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 4pm (America/Chicago)";
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: `ACP agent reported a terminal limit failure.\n${title}`,
+      resultJson: {
+        status: "failed",
+        terminalSessionFailure: { category: "limit", title },
+        errorFamily: "provider_quota",
+        providerQuotaResetUnknown: true,
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("keeps another adapter's reset when its stored output only quotes a spend limit", () => {
     const now = new Date("2026-10-04T12:00:00.000Z");
     expect(classifyAdapterFailureForRecovery({
